@@ -1,0 +1,6 @@
+{
+  "name": "NotebookLM 워터마크 제거기",
+  "description": "NotebookLM에서 생성된 슬라이드 이미지의 우측 하단 워터마크를 자동으로 제거합니다.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
