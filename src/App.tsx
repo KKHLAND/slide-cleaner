@@ -1,8 +1,13 @@
 import React, { useState, useRef } from 'react';
-import { UploadCloud, Image as ImageIcon, Settings2, Download, Copy, RefreshCw, Layers } from 'lucide-react';
+import { UploadCloud, Image as ImageIcon, Settings2, Download, Copy, RefreshCw, Layers, FileText } from 'lucide-react';
 import JSZip from 'jszip';
+import { jsPDF } from 'jspdf';
+import * as pdfjsLib from 'pdfjs-dist';
 import { removeWatermark, FillMethod } from './lib/imageLogic';
 import { motion, AnimatePresence } from 'motion/react';
+
+// Configure PDF.js worker using unpkg CDN matching the installed version
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
 // Default configuration for the NotebookLM watermark region
 const DEFAULT_CONFIG = {
@@ -25,35 +30,82 @@ export default function App() {
   const [images, setImages] = useState<ImgData[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isZipping, setIsZipping] = useState(false);
+  const [isPDFExtracting, setIsPDFExtracting] = useState(false);
+  const [isExportingPDF, setIsExportingPDF] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [config, setConfig] = useState(DEFAULT_CONFIG);
 
-  const handleFiles = (files: FileList | File[]) => {
-    const newFiles = Array.from(files).slice(0, 15); // Limit to 15 images
-    
-    Promise.all(newFiles.map(file => {
-      return new Promise<ImgData>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          const url = event.target?.result as string;
-          const img = new Image();
-          img.onload = () => {
-             resolve({
-                id: Math.random().toString(36).substring(7),
-                file,
-                originalUrl: url,
-                processedUrl: null,
-                size: { w: img.width, h: img.height }
-             });
-          };
-          img.src = url;
-        };
-        reader.readAsDataURL(file);
+  const handleFiles = async (files: FileList | File[]) => {
+    setIsPDFExtracting(true);
+    const loadedImages: ImgData[] = [];
+    const filesArray = Array.from(files);
+
+    try {
+      for (const file of filesArray) {
+        if (loadedImages.length >= 15) break;
+
+        const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+        if (isPDF) {
+          try {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            const pagesToExtract = Math.min(pdf.numPages, 15 - loadedImages.length);
+
+            for (let i = 1; i <= pagesToExtract; i++) {
+              const page = await pdf.getPage(i);
+              const viewport = page.getViewport({ scale: 1.5 }); // High-quality but memory-safe rendering
+              const canvas = document.createElement('canvas');
+              const context = canvas.getContext('2d');
+              if (context) {
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+                await page.render({ canvasContext: context, viewport, canvas }).promise;
+                const originalUrl = canvas.toDataURL('image/png');
+                loadedImages.push({
+                  id: Math.random().toString(36).substring(7),
+                  file,
+                  originalUrl,
+                  processedUrl: null,
+                  size: { w: viewport.width, h: viewport.height }
+                });
+              }
+            }
+          } catch (pdfErr) {
+            console.error("PDF Parsing error:", pdfErr);
+            alert(`${file.name} PDF 파일을 읽는 중 오류가 발생했습니다. 암호화되었거나 깨진 파일이 아닌지 확인해주세요.`);
+          }
+        } else if (file.type.startsWith('image/')) {
+          await new Promise<void>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+              const url = event.target?.result as string;
+              const img = new Image();
+              img.onload = () => {
+                loadedImages.push({
+                  id: Math.random().toString(36).substring(7),
+                  file,
+                  originalUrl: url,
+                  processedUrl: null,
+                  size: { w: img.width, h: img.height }
+                });
+                resolve();
+              };
+              img.src = url;
+            };
+            reader.readAsDataURL(file);
+          });
+        }
+      }
+      setImages(prev => {
+        return [...prev, ...loadedImages].slice(0, 15);
       });
-    })).then(loadedImages => {
-       setImages(loadedImages);
-    });
+    } catch (error) {
+      console.error("File loading failed", error);
+      alert("파일을 로드하는 중 알 수 없는 오류가 발생했습니다.");
+    } finally {
+      setIsPDFExtracting(false);
+    }
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -99,7 +151,7 @@ export default function App() {
     if (!img.processedUrl) return;
     const a = document.createElement('a');
     a.href = img.processedUrl;
-    a.download = `notebooklm-cleaned-${index + 1}-${Date.now()}.png`;
+    a.download = `cleaned-slide-${index + 1}-${Date.now()}.png`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -114,7 +166,7 @@ export default function App() {
       images.forEach((img, i) => {
         if (img.processedUrl) {
           const base64Data = img.processedUrl.replace(/^data:image\/(png|jpeg|jpg);base64,/, "");
-          zip.file(`notebooklm-cleaned-${i + 1}.png`, base64Data, { base64: true });
+          zip.file(`cleaned-slide-${i + 1}.png`, base64Data, { base64: true });
           hasFiles = true;
         }
       });
@@ -124,7 +176,7 @@ export default function App() {
         const url = URL.createObjectURL(content);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `notebooklm-cleaned-all-${Date.now()}.zip`;
+        a.download = `cleaned-slides-all-${Date.now()}.zip`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -135,6 +187,43 @@ export default function App() {
       alert("압축 파일 생성에 실패했습니다.");
     } finally {
       setIsZipping(false);
+    }
+  };
+
+  const downloadAsPDF = async () => {
+    const processedImages = images.filter(img => img.processedUrl);
+    if (processedImages.length === 0) {
+      alert("워터마크가 제거된 이미지가 없습니다. '로고 지우기'를 먼저 진행해주세요.");
+      return;
+    }
+
+    setIsExportingPDF(true);
+    try {
+      const firstImg = processedImages[0];
+      const doc = new jsPDF({
+        orientation: firstImg.size.w > firstImg.size.h ? 'landscape' : 'portrait',
+        unit: 'px',
+        format: [firstImg.size.w, firstImg.size.h]
+      });
+
+      processedImages.forEach((img, i) => {
+        if (!img.processedUrl) return;
+        const w = img.size.w;
+        const h = img.size.h;
+        const isLandscape = w > h;
+
+        if (i > 0) {
+          doc.addPage([w, h], isLandscape ? 'landscape' : 'portrait');
+        }
+        doc.addImage(img.processedUrl, 'PNG', 0, 0, w, h);
+      });
+
+      doc.save(`cleaned-slides-all-${Date.now()}.pdf`);
+    } catch (error) {
+      console.error("PDF export failed", error);
+      alert("PDF 파일 생성 중 오류가 발생했습니다.");
+    } finally {
+      setIsExportingPDF(false);
     }
   };
 
@@ -158,7 +247,21 @@ export default function App() {
         </header>
 
         <main className="flex-1 flex flex-col gap-5">
-          {images.length === 0 ? (
+          {isPDFExtracting ? (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="glass-panel p-12 text-center max-w-3xl mx-auto w-full mt-10 flex flex-col items-center justify-center gap-6 min-h-[350px]"
+            >
+              <RefreshCw size={48} className="animate-spin text-blue-500 animate-duration-1000" />
+              <div className="space-y-2">
+                <h3 className="text-xl font-bold">PDF 파일에서 고화질 슬라이드 추출 중...</h3>
+                <p className="opacity-70 text-sm">
+                  PDF 각 페이지를 디지털 이미지로 선명하게 변환하는 작업 중입니다. 잠시만 기다려주세요.
+                </p>
+              </div>
+            </motion.div>
+          ) : images.length === 0 ? (
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -184,15 +287,15 @@ export default function App() {
                   <UploadCloud size={32} />
                 </div>
                 <p className="text-lg font-semibold">
-                  이미지 파일(들) 드래그 앤 드롭
+                  이미지 또는 PDF 파일 드래그 앤 드롭
                 </p>
                 <p className="text-sm opacity-50">
-                  또는 클릭하여 파일 선택 (PNG, JPG / 최대 15장)
+                  또는 클릭하여 파일 선택 (PNG, JPG, PDF / 최대 15장)
                 </p>
                 <input
                   type="file"
                   className="hidden"
-                  accept="image/png, image/jpeg"
+                  accept="image/png, image/jpeg, application/pdf"
                   multiple
                   ref={fileInputRef}
                   onChange={handleFileUpload}
@@ -200,7 +303,7 @@ export default function App() {
               </div>
               
               <div className="mt-6 text-center text-sm opacity-50 font-medium">
-                ✓ 서버로 이미지가 전송되지 않는 100% 클라이언트 기술 적용
+                ✓ 서버로 파일이 전혀 전송되지 않는 100% 안전한 브라우저 내 로컬 처리
               </div>
             </motion.div>
           ) : (
@@ -264,16 +367,27 @@ export default function App() {
                 </div>
 
                 {/* 액션 버튼 */}
-                <div className="w-full lg:w-auto flex-shrink-0 flex flex-row gap-2 pt-3 lg:pt-0 border-t border-white/10 lg:border-none">
+                <div className="w-full lg:w-auto flex-shrink-0 flex flex-wrap gap-2 pt-3 lg:pt-0 border-t border-white/10 lg:border-none">
                   {images.some(i => i.processedUrl) && (
-                    <button
-                      onClick={downloadAll}
-                      disabled={isZipping}
-                      className="bg-[#11998e] hover:bg-[#38ef7d] disabled:opacity-70 disabled:cursor-not-allowed text-white px-3 py-2 rounded-xl text-xs font-semibold shadow-lg transition-colors flex items-center justify-center gap-1.5"
-                    >
-                      {isZipping ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
-                      {isZipping ? '압축 중...' : '모두 다운로드'}
-                    </button>
+                    <>
+                      <button
+                        onClick={downloadAll}
+                        disabled={isZipping || isExportingPDF}
+                        className="bg-[#11998e] hover:bg-[#38ef7d] disabled:opacity-70 disabled:cursor-not-allowed text-white px-3 py-2 rounded-xl text-xs font-semibold shadow-lg transition-colors flex items-center justify-center gap-1.5"
+                      >
+                        {isZipping ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
+                        {isZipping ? '압축 중...' : '이미지 ZIP'}
+                      </button>
+                      
+                      <button
+                        onClick={downloadAsPDF}
+                        disabled={isZipping || isExportingPDF}
+                        className="bg-[#833ab4] hover:bg-[#fcb045] disabled:opacity-70 disabled:cursor-not-allowed text-white px-3 py-2 rounded-xl text-xs font-semibold shadow-lg transition-colors flex items-center justify-center gap-1.5"
+                      >
+                        {isExportingPDF ? <RefreshCw size={14} className="animate-spin" /> : <FileText size={14} />}
+                        {isExportingPDF ? 'PDF 생성 중...' : 'PDF 저장'}
+                      </button>
+                    </>
                   )}
                   <button
                     onClick={processImageRequest}
