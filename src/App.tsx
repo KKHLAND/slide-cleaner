@@ -11,10 +11,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLi
 
 // Default configuration for the NotebookLM watermark region
 const DEFAULT_CONFIG = {
-  width: 150,
-  height: 30,
-  marginX: 0,
-  marginY: 0,
+  width: 180,
+  height: 40,
+  marginX: 5,
+  marginY: 5,
   method: 'stretch-left' as FillMethod,
 };
 
